@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "拾光 · Facebook 媒體保存（P0 驗證版）",
+  "version": "0.1.0",
+  "description": "電腦版 Facebook 媒體保存可行性驗證；來源支援尚待實測。",
+  "permissions": ["storage"],
+  "host_permissions": ["https://www.facebook.com/*"],
+  "optional_host_permissions": ["https://*.fbcdn.net/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "content_scripts": [{"matches": ["https://www.facebook.com/*"], "js": ["content.js"], "run_at": "document_idle"}],
+  "action": {"default_title": "開啟拾光控制頁"},
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'"}
+}

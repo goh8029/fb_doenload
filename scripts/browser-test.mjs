@@ -1,0 +1,68 @@
+import { chromium } from 'playwright';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import assert from 'node:assert/strict';
+await mkdir('test-results', { recursive: true });
+const extension = resolve('dist');
+const context = await chromium.launchPersistentContext('', { channel: 'chromium', executablePath: process.env.TEST_CHROME_PATH || undefined, headless: true, args: ['--disable-features=DisableLoadExtensionCommandLineSwitch', `--disable-extensions-except=${extension}`, `--load-extension=${extension}`] });
+const errors = [];
+try {
+  const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 15_000 });
+  const id = new URL(worker.url()).hostname;
+  const page = await context.newPage();
+  page.on('pageerror', error => errors.push(error.message));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(`chrome-extension://${id}/controller.html`);
+  await page.getByRole('heading', { name: '把美好，好好收藏。' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '↓ 驗證所選樣本' }).isDisabled(), true);
+  await page.getByRole('button', { name: '讀取工作頁', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '請在 Facebook' }).waitFor();
+  await page.screenshot({ path: 'test-results/controller-desktop.png', fullPage: true });
+  await page.getByRole('button', { name: '下載任務', exact: false }).click();
+  await page.getByRole('heading', { name: '目前沒有執行中的工作' }).waitFor();
+  await page.getByRole('button', { name: '批次紀錄', exact: false }).click();
+  await page.getByRole('heading', { name: '尚無樣本紀錄' }).waitFor();
+  await page.getByRole('button', { name: '偏好設定', exact: false }).click();
+  await page.getByRole('heading', { name: '來源支援', exact: true }).waitFor();
+  await page.getByRole('button', { name: '下載工作區', exact: false }).click();
+  await page.setViewportSize({ width: 800, height: 800 });
+  await page.getByRole('button', { name: '收合選取檢視' }).click();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: 'test-results/controller-narrow.png', fullPage: true });
+  // Controlled Facebook-origin fixture verifies routing; this is not a live-source claim.
+  await context.route('https://www.facebook.com/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<!doctype html><html><meta charset="UTF-8"><body><h1>受控測試目標</h1><a href="/photo.php?fbid=987654321"><img src="https://scontent.xx.fbcdn.net/test.jpg" width="200" height="200"></a></body></html>' }));
+  await context.route('https://*.fbcdn.net/**', route => route.abort());
+  const source = await context.newPage();
+  await source.goto('https://www.facebook.com/profile.php?id=123456789');
+  await source.locator('#shiguang-extension-root').waitFor();
+  const workReady = context.waitForEvent('page');
+  await source.locator('#shiguang-extension-root').click();
+  const work = await workReady;
+  await work.waitForLoadState();
+  // Extension-created initial navigation can precede Playwright target attachment.
+  await work.reload();
+  await work.locator('#shiguang-extension-root').waitFor();
+  assert.equal(source.isClosed(), false);
+  assert.equal(work.url(), source.url());
+  // Wait for the worker's binding, without depending on the private shadow tree.
+  await worker.evaluate(async () => { for (let i = 0; i < 20; i++) { const data = await chrome.storage.session.get(null); if (Object.keys(data).some(k => k.startsWith('session:'))) return; await new Promise(r => setTimeout(r, 100)); } throw new Error('No session binding'); });
+  await work.waitForTimeout(600);
+  const controlReady = context.waitForEvent('page');
+  await work.locator('#shiguang-extension-root').click();
+  const control = await controlReady;
+  await control.waitForLoadState();
+  await control.getByRole('button', { name: '讀取工作頁', exact: true }).click();
+  await control.getByRole('heading', { name: '受控測試目標' }).waitFor();
+  await control.getByRole('checkbox', { name: '選擇 987654321' }).check();
+  await control.evaluate(() => { window.showDirectoryPicker = async () => navigator.storage.getDirectory(); });
+  await control.getByRole('button', { name: '選擇資料夾', exact: true }).click();
+  await control.getByRole('button', { name: '↓ 驗證所選樣本' }).click();
+  await control.getByRole('dialog').waitFor();
+  await control.getByRole('button', { name: '取消', exact: true }).click();
+  assert.equal(await control.getByRole('dialog').count(), 0);
+  const entries = await control.evaluate(async () => { const names = []; for await (const [name] of (await navigator.storage.getDirectory()).entries()) names.push(name); return names; });
+  assert.deepEqual(entries, []);
+  assert.deepEqual(errors, []);
+  await writeFile('test-results/browser.json', JSON.stringify({ browser: context.browser()?.version(), checks: ['MV3 service worker loaded', 'React controller loaded without errors', 'unknown target blocked', 'missing session handled', 'navigation', 'narrow layout', 'fixture new workspace preserves source', 'session routing and sample extraction', 'confirmation cancellation writes no files'], result: 'passed', scope: 'Controlled Chromium smoke test; not real Facebook validation' }, null, 2));
+  console.log('PASS: MV3 load, controller navigation, unknown-target block, responsive layout, zero page errors.');
+} finally { await context.close(); }
